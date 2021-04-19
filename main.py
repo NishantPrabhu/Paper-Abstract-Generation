@@ -17,7 +17,7 @@ if __name__ == "__main__":
     ap.add_argument("-o", "--output", required=False, default=dt.now().strftime("%H-%M_%d-%m-%Y"), help="Path to output dir")
     args = vars(ap.parse_args())
 
-    trainer = trainers.DeepfakeClassifier(args)
+    trainer = trainers.AbstractGeneration(args)
     
     if args['task'] == 'train':
         trainer.train()

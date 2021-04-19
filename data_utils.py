@@ -7,16 +7,17 @@ import os
 import numpy as np 
 import pandas as pd
 from ntpath import basename
-from transformers import GPT2Tokenizer
+from transformers import BartTokenizer
 
 
 class DataLoader:
 
-    def __init__(self, titles, abstracts, batch_size, shuffle):
+    def __init__(self, titles, abstracts, batch_size, shuffle, device):
         self.titles = titles
+        self.device = device
         self.abstracts = abstracts
         self.batch_size = batch_size 
-        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        self.tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
         self.ptr = 0
 
         if shuffle:
@@ -37,12 +38,12 @@ class DataLoader:
             if self.ptr >= len(self.titles):
                 self.ptr = 0
 
-        title_tokens = self.tokenizer(titles, padding=True, return_tensors="pt")
+        title_tokens = self.tokenizer(titles, padding=True, return_tensors="pt")["input_ids"].to(self.device)
         if isinstance(abstracts[0], str):
-            abstract_tokens = self.tokenizer(abstracts, padding=True, return_tensors="pt")
-            return title_tokens, abstract_tokens
+            abstract_tokens = self.tokenizer(abstracts, padding=True, return_tensors="pt")["input_ids"].to(self.device)
+            return titles, title_tokens, abstracts, abstract_tokens
         else:
-            return title_tokens, abstracts
+            return titles, title_tokens, abstracts
 
 
 def get_dataloaders(root, val_split, batch_size):

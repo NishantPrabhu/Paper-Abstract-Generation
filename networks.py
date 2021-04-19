@@ -4,11 +4,11 @@ Network definitions
 """
 
 import torch
-from transformers import GPT2Model 
+from transformers import BartForConditionalGeneration 
 
 
-def get_gpt2_model(freeze_layers=6):
-    model = GPT2Model.from_pretrained('gpt2')
+def get_gpt2_model(freeze_layers=8):
+    model = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
 
     for parameter in model.parameters():
         parameter.requires_grad = False
@@ -25,3 +25,8 @@ def get_gpt2_model(freeze_layers=6):
         parameter.requires_grad = True
 
     return model
+
+
+if __name__ == "__main__":
+
+    model = get_gpt2_model(6)
