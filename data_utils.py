@@ -4,21 +4,25 @@ Data management and loaders
 """
 
 import os
+import string
 import numpy as np 
 import pandas as pd
 from ntpath import basename
-from transformers import BartTokenizer
+from transformers import BertTokenizer
 
 
 class DataLoader:
 
     def __init__(self, titles, abstracts, batch_size, shuffle, device):
+        self.ptr = 0
         self.titles = titles
         self.device = device
         self.abstracts = abstracts
         self.batch_size = batch_size 
-        self.tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        self.ptr = 0
+        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+        special_tokens = {"additional_special_tokens": ["[BOS]", "[EOS]"]}
+        added_tokens = self.tokenizer.add_special_tokens(special_tokens)
 
         if shuffle:
             idx = np.random.permutation(np.arange(len(self.titles)))
@@ -32,15 +36,17 @@ class DataLoader:
         titles, abstracts = [], []
         for _ in range(self.batch_size):
             titles.append(self.titles[self.ptr])
-            abstracts.append(self.abstracts[self.ptr])
+            abstract = self.abstracts[self.ptr]
+            abstract = abstract.translate(str.maketrans({key: " {0}".format(key) for key in string.punctuation}))
+            abstract = "[BOS] " + abstract + " [EOS]"
             self.ptr += 1
 
             if self.ptr >= len(self.titles):
                 self.ptr = 0
 
-        title_tokens = self.tokenizer(titles, padding=True, return_tensors="pt")["input_ids"].to(self.device)
+        title_tokens = self.tokenizer(titles, padding=True, truncation=True, return_tensors="pt")["input_ids"].to(self.device)
         if isinstance(abstracts[0], str):
-            abstract_tokens = self.tokenizer(abstracts, padding=True, return_tensors="pt")["input_ids"].to(self.device)
+            abstract_tokens = self.tokenizer(abstracts, padding=True, truncation=True, return_tensors="pt")["input_ids"].to(self.device)
             return titles, title_tokens, abstracts, abstract_tokens
         else:
             return titles, title_tokens, abstracts

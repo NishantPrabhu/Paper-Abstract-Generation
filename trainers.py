@@ -6,12 +6,14 @@ Model definitions
 import torch 
 import wandb
 import common
+import losses
 import metrics
 import networks
 import data_utils
 import train_utils
 import torch.nn as nn 
-from transformers import BartForConditionalGeneration 
+from transformers import BertModel
+from transformers import BertTokenizer 
 
 
 class AbstractGeneration:
@@ -20,22 +22,27 @@ class AbstractGeneration:
         self.args = args 
         self.config, self.output_dir, self.logger, self.device = common.init_experiment(args)
 
-        # Model, optimizer, scheduler 
-        self.model = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self.optim = train_utils.get_optimizer(config=self.config["optimizer"], params=self.model.parameters())
-        self.scheduler, self.warmup_epochs = train_utils.get_scheduler(
-            config={**self.config["scheduler"], "epochs": self.config["epochs"]}, optimizer=self.optim)
-        
-        if self.warmup_epochs > 0:
-            self.warmup_rate = (self.config["optimizer"]["lr"] - 1e-12) / self.warmup_epochs
-
         # Dataloaders
         self.train_loader, self.val_loader, self.test_loader = data_utils.get_dataloaders(
             self.config["data"]["root"], self.config["data"]["val_split"], self.config["data"]["batch_size"])
+
+        # Model, optimizer, scheduler 
+        self.encoder = BertModel.from_pretrained(self.config["encoder"]["name"])
+        self.encoder.resize_token_embeddings(len(self.train_loader.tokenizer))
+        self.decoder = networks.Decoder(self.config["decoder"], self.encoder.embeddings, self.train_loader.tokenizer.vocab_size)
+
+        self.optim = train_utils.get_optimizer(
+            config=self.config["optimizer"], params=list(self.encoder.parameters())+list(self.decoder.parameters()))
+        self.scheduler, self.warmup_epochs = train_utils.get_scheduler(
+            config={**self.config["scheduler"], "epochs": self.config["epochs"]}, optimizer=self.optim)
+
+        if self.warmup_epochs > 0:
+            self.warmup_rate = (self.config["optimizer"]["lr"] - 1e-12) / self.warmup_epochs
         
-        # Logging and metrics
+        # Logging, criterion and metrics
         run = wandb.init(project="abstract-generation-dl-hack")
         self.logger.write(f"Wandb: {run.get_url()}", mode='info')
+        self.criterion = losses.GenerationLoss()
         self.best_val_loss = np.inf
 
         # Load model if specified
@@ -43,12 +50,14 @@ class AbstractGeneration:
             self.load_model(args["load"])
 
     def save_model(self):
-        torch.save(self.model.state_dict(), os.path.join(self.output_dir, "best_model.ckpt"))
+        state = {"encoder": self.encoder.state_dict(), "decoder": self.decoder.state_dict()}
+        torch.save(state, os.path.join(self.output_dir, "best_model.ckpt"))
 
     def load_model(self, path):
         if os.path.exists(os.path.join(path, "best_model.ckpt")):
             state = torch.load(os.path.join(path, "best_model.ckpt"))
-            self.model.load_state_dict(state)
+            self.encoder.load_state_dict(state["encoder"])
+            self.decoder.load_state_dict(state["decoder"])
             self.logger.print(f"Successfully loaded model from {path}", mode='info')
         else:
             raise NotImplementedError(f"No saved model found in {path}")
@@ -60,40 +69,58 @@ class AbstractGeneration:
         else:
             self.scheduler.step()
 
-    def generate_abstracts(self, title_tokens):
-        out_tokens = self.model.generate(
-            title_tokens, 
-            do_sample = True,
-            max_length = self.config["test"]["max_length"],
-            top_p = self.config["test"].get("top_p", 0.95),
-            top_k = self.config["test"].get("top_k", 50),
-            no_repeat_ngram_size = self.config["test"].get("no_repeat_ngram_size", 2)
-        )
-        out_sentences = []
-        for i in range(out_tokens.size(0)):
-            out_sentences.append(self.test_loader.tokenizer.decode(out_tokens[i], skip_special_tokens=True))
-        return out_sentences
+    def get_metrics(self):
+        all_abstracts, all_outputs = [], []
+        for idx in range(self.val_loader):
+            batch = self.val_loader.flow()
+            _, title_tokens, abstracts, abstract_tokens = batch 
+            with torch.no_grad():
+                encoder_out = self.encoder(title_tokens)
+                out_sentences = self.generate_abstracts(encoder_out)
+            all_abstracts.extend(abstracts)
+            all_outputs.extend(out_sentences)
+
+        bleu_scores = metrics.bleu_score(all_outputs, all_abstracts)
+        avg_length = metrics.average_text_lengths(all_outputs)
+        return {**bleu_scores, **avg_length}
+
+    def generate_abstract(self, encoder_outs):
+        idx2word = {idx: word for word, idx in dict(self.test_loader.tokenizer.vocab).items()}
+        output_sentences = []
+
+        for i in range(encoder_outs.size(0)):
+            generated_text = "[BOS] "
+            while len(generated_text.split()) < self.maxlen:
+                input_ids = self.test_loader.tokenizer(generated_text)["input_ids"]
+                with torch.no_grad():
+                    word_probs = self.decoder(input_ids, encoder_outs[i])
+                word = idx2word.get(word_probs.argmax(dim=1), '')
+                generated_text += word + " "
+            sent = " ".join([w for w in generated_text.split() if w not in ["[BOS], [EOS], [PAD]"]])   
+            output_sentences.append(sent)
+        return output_sentences
 
     def train_one_step(self, batch):
         _, title_tokens, abstracts, abstract_tokens = batch 
-        output = self.model(input_ids=title_tokens, labels=abstract_tokens, return_dict=True)
+        abstract_inp, abstract_trg = abstract_tokens[:, :-1], abstract_tokens[:, 1:]
+        title_enc = self.encoder(title_tokens)
+        abstract_out = self.decoder(abstract_inp, encoder_out=title_enc)
+        loss = self.criterion(abstract_out, abstract_trg)
+
         self.optim.zero_grad()
-        output["loss"].backward()
+        loss.backward()
         self.optim.step()
-        output_sentences = self.generate_abstracts(title_tokens)            # Generate some sentences for eval metrics
-        bleu_scores = metrics.bleu_score(output_sentences, abstracts)
-        avg_lengths = metrics.average_text_lengths(output_sentences)
-        return {"loss": loss.item(), **bleu_scores, **avg_lengths}
+        return {"loss": loss.item()}
 
     def validate_one_step(self, batch):
-        _, title_tokens, abstracts, abstract_tokens = batch 
+        _, title_tokens, abstracts, abstract_tokens = batch
+        abstract_inp, abstract_trg = abstract_tokens[:, :-1], abstract_tokens[:, 1:]
+        title_enc = self.encoder(title_tokens)
         with torch.no_grad():
-            output = self.model(input_ids=title_tokens, labels=abstract_tokens, return_dict=True)
-        loss = output["loss"]
-        output_sentences = self.generate_abstracts(title_tokens)            # Generate some sentences for eval metrics
-        bleu_scores = metrics.bleu_score(output_sentences, abstracts)
-        avg_lengths = metrics.average_text_lengths(output_sentences)
-        return {"loss": loss.item(), **bleu_scores, **avg_lengths}
+            abstract_out = self.decoder(abstract_inp, encoder_out=title_enc)
+        
+        loss = self.criterion(abstract_out, abstract_trg)
+        return {"loss": loss.item()}
 
     def get_test_predictions(self):
         if self.args["load"] is None:
@@ -103,7 +130,8 @@ class AbstractGeneration:
         for idx, batch in enumerate(self.test_loader):
             titles, title_tokens, ids = batch
             with torch.no_grad():
-                out_sentences = self.generate_abstracts(title_tokens)
+                encoder_out = self.encoder(title_tokens)
+                out_sentences = self.generate_abstracts(encoder_out)
 
             test_ids.extend(ids)
             test_preds.extend(out_sentences)
@@ -125,20 +153,11 @@ class AbstractGeneration:
             for idx, batch in enumerate(self.train_loader):
                 train_metrics = self.train_one_step(batch)
                 train_meter.add(train_metrics)
-                wandb.log({
-                    "Train loss": train_meter.return_metrics()["loss"],
-                    "Train average length": train_meter.return_metrics()["avg_length"]
-                })
+                wandb.log({"Train loss": train_meter.return_metrics()["loss"]})
                 common.progress_bar(progress=(idx+1)/len(self.train_loader), status=train_meter.return_msg())
 
             common.progress_bar(progress=1.0, status=train_meter.return_msg())
             self.adjust_learning_rate(epoch+1)
-            wandb.log({
-                "Train BLEU-1": train_meter.return_metrics()["bleu_1"],
-                "Train BLEU-2": train_meter.return_metrics()["bleu_2"],
-                "Train BLEU-3": train_meter.return_metrics()["bleu_3"],
-                "Epoch": epoch+1
-            })
 
             if (epoch+1) % self.config["eval_every"] == 0:
                 self.logger.record(f'Epoch {epoch+1}/{self.config["epochs"]}', mode='val')
@@ -151,13 +170,11 @@ class AbstractGeneration:
                     common.progress_bar(progress=(idx+1)/len(self.val_loader), status=val_meter.return_msg())
 
                 common.progress_bar(progress=1.0, status=val_meter.return_msg())
+                metrics = self.get_metrics()
                 wandb.log({
                     "Validation loss": val_meter.return_metrics()["loss"],
-                    "Validation BLEU-1": val_meter.return_metrics()["bleu_1"],
-                    "Validation BLEU-2": val_meter.return_metrics()["bleu_2"],
-                    "Validation BLEU-3": val_meter.return_metrics()["bleu_3"],
-                    "Validation average length": val_meter.return_metrics()["avg_length"],
-                    "Epoch": epoch+1
+                    "BLEU-1": metrics["bleu_1"], "BLEU-2": metrics["bleu_2"], "BLEU-3": metrics["bleu_3"],
+                    "Average length": metrics["avg_length"], "Epoch": epoch+1
                 })
 
                 if val_meter.return_metrics()["loss"] < self.best_val_loss:
