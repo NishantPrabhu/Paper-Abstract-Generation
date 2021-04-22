@@ -21,13 +21,10 @@ class DataLoader:
         self.batch_size = batch_size 
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-        special_tokens = {"additional_special_tokens": ["[BOS]", "[EOS]"]}
-        added_tokens = self.tokenizer.add_special_tokens(special_tokens)
-
         if shuffle:
             idx = np.random.permutation(np.arange(len(self.titles)))
-            self.titles = self.titles[idx]
-            self.abstracts = self.abstracts[idx]
+            self.titles = np.asarray(self.titles)[idx].tolist()
+            self.abstracts = np.asarray(self.abstracts)[idx].tolist()
 
     def __len__(self):
         return len(self.titles) // self.batch_size
@@ -37,8 +34,7 @@ class DataLoader:
         for _ in range(self.batch_size):
             titles.append(self.titles[self.ptr])
             abstract = self.abstracts[self.ptr]
-            abstract = abstract.translate(str.maketrans({key: " {0}".format(key) for key in string.punctuation}))
-            abstract = "[BOS] " + abstract + " [EOS]"
+            abstracts.append(abstract.translate(str.maketrans({key: " {0}".format(key) for key in string.punctuation})))
             self.ptr += 1
 
             if self.ptr >= len(self.titles):
@@ -52,7 +48,7 @@ class DataLoader:
             return titles, title_tokens, abstracts
 
 
-def get_dataloaders(root, val_split, batch_size):
+def get_dataloaders(root, val_split, batch_size, device):
     """ 
     root will have train.csv and test.csv
     """
@@ -64,12 +60,12 @@ def get_dataloaders(root, val_split, batch_size):
     assert len(main_titles) == len(main_abstracts), f"Train data has {len(train_titles)} titles and {len(train_abstracts)} abstracts"
 
     val_size = int(val_split * len(main_titles))
-    val_titles, val_abstracts = main_titles[:val_split], main_abstracts[:val_split]
-    train_titles, train_abstracts = main_titles[val_split:], main_abstracts[val_split:]
+    val_titles, val_abstracts = main_titles[:val_size], main_abstracts[:val_size]
+    train_titles, train_abstracts = main_titles[val_size:], main_abstracts[val_size:]
 
-    train_loader = DataLoader(train_titles, train_abstracts, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_titles, val_abstracts, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_titles, np.arange(len(test_titles)), batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_titles, train_abstracts, batch_size=batch_size, shuffle=True, device=device)
+    val_loader = DataLoader(val_titles, val_abstracts, batch_size=batch_size, shuffle=False, device=device)
+    test_loader = DataLoader(test_titles, np.arange(len(test_titles)), batch_size=batch_size, shuffle=False, device=device)
     return train_loader, val_loader, test_loader
 
 

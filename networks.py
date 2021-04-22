@@ -6,6 +6,7 @@ Probably going to use a pre-trained BERT encoder
 and train a decoder model from scratch.
 """
 
+import math
 import torch
 import numpy as np
 import torch.nn as nn 
@@ -29,17 +30,16 @@ class MultiheadSelfAttention(nn.Module):
 
     def forward(self, x, encoder_out=None):
         bs, n, _ = x.size()     
+        q = self.query(x).view(bs, n, self.heads, self.model_dim // self.heads)                         # (bs, n, heads, d)
 
         if encoder_out is None:           
-            q = self.query(x).view(bs, n, self.heads, self.model_dim // self.heads)                     # (bs, n, heads, d)
             k = self.key(x).view(bs, n, self.heads, self.model_dim // self.heads)                       # (bs, n, heads, d)
+            v = self.value(x).view(bs, n, self.heads, self.model_dim // self.heads)                     # (bs, n, heads, d)
         else:
-            assert encoder_out.size() == x.size(), \
-                f"External keys/values have size {encoder_out.size()} but query has size {x.size()}"
-            q = self.query(encoder_out).view(bs, b, self.heads, self.model_dim // self.heads)           # (bs, n, heads, d)
-            k = self.key(encoder_out).view(bs, b, self.heads, self.model_dim // self.heads)             # (bs, n, heads, d)
+            bs, n_enc, _ = encoder_out.size()
+            k = self.key(encoder_out).view(bs, n_enc, self.heads, self.model_dim // self.heads)         # (bs, n, heads, d)
+            v = self.value(encoder_out).view(bs, n_enc, self.heads, self.model_dim // self.heads)       # (bs, n, heads, d)
 
-        v = self.value(x).view(bs, n, self.heads, self.model_dim // self.heads)                         # (bs, n, heads, d)
         q = q.permute(0, 2, 1, 3).contiguous()                                                          # (bs, heads, n, d)
         k = k.permute(0, 2, 1, 3).contiguous()                                                          # (bs, heads, n, d)
         v = v.permute(0, 2, 1, 3).contiguous()                                                          # (bs, heads, n, d)
@@ -75,9 +75,9 @@ class MaskedMultiheadSelfAttention(nn.Module):
         k = k.permute(0, 2, 1, 3).contiguous()                                                      # (bs, heads, n, d)
         v = v.permute(0, 2, 1, 3).contiguous()                                                      # (bs, heads, n, d)
 
-        mask = torch.full((n, n), -np.inf)
-        mask = torch.triu(mask).fill_diagonal_(0).repeat(bs, self.heads, 1, 1)
         attn_scores = torch.einsum('bhid,bhjd->bhij', [q, k]) / math.sqrt(self.model_dim)           # (bs, heads, n, n) 
+        mask = torch.full((attn_scores.size(2), attn_scores.size(3)), -np.inf).to(x.device)
+        mask = torch.triu(mask).fill_diagonal_(0).repeat(bs, self.heads, 1, 1)
         attn_probs = F.softmax(attn_scores + mask, dim=-1)
 
         context = torch.einsum('bhij,bhjd->bhid', [attn_probs, v])                                  # (bs, heads, n, d)
@@ -125,10 +125,10 @@ class Decoder(nn.Module):
         self.num_layers = config["num_blocks"]
         self.blocks = nn.ModuleList([DecoderBlock(heads, model_dim, ff_dim) for _ in range(self.num_layers)])
         self.linear_out = nn.Linear(in_features=model_dim, out_features=tokenizer_vocab_size, bias=True)
-        self.embeddings = embedding_layer 
+        self.decoder_embeddings = embedding_layer 
 
     def forward(self, x, encoder_out=None):
-        x = self.embeddings(x)
+        x = self.decoder_embeddings(x)
         for i in range(self.num_layers):
             x = self.blocks[i](x, encoder_out)
         x = self.linear_out(x)
