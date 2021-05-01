@@ -21,7 +21,7 @@ optimizer:
 
 scheduler:
   name: cosine
-  warmup_epochs: 2
+  warmup_epochs: 0
 
 data:
   root: ../track2_data
