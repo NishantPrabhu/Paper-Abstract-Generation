@@ -4,22 +4,21 @@ Data management and loaders
 """
 
 import os
-import string
 import numpy as np 
 import pandas as pd
 from ntpath import basename
-from transformers import BertTokenizer
+from transformers import BartTokenizer
 
 
 class DataLoader:
 
     def __init__(self, titles, abstracts, batch_size, shuffle, device):
-        self.ptr = 0
         self.titles = titles
         self.device = device
         self.abstracts = abstracts
         self.batch_size = batch_size 
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        self.ptr = 0
 
         if shuffle:
             idx = np.random.permutation(np.arange(len(self.titles)))
@@ -33,8 +32,7 @@ class DataLoader:
         titles, abstracts = [], []
         for _ in range(self.batch_size):
             titles.append(self.titles[self.ptr])
-            abstract = self.abstracts[self.ptr]
-            abstracts.append(abstract.translate(str.maketrans({key: " {0}".format(key) for key in string.punctuation})))
+            abstracts.append(self.abstracts[self.ptr])
             self.ptr += 1
 
             if self.ptr >= len(self.titles):
@@ -57,7 +55,7 @@ def get_dataloaders(root, val_split, batch_size, device):
 
     main_titles, main_abstracts = main['title'].values.tolist(), main['abstract'].values.tolist()
     test_titles = test['title'].values.tolist()
-    assert len(main_titles) == len(main_abstracts), f"Train data has {len(train_titles)} titles and {len(train_abstracts)} abstracts"
+    assert len(main_titles) == len(main_abstracts), f"Train data has {len(main_titles)} titles and {len(main_abstracts)} abstracts"
 
     val_size = int(val_split * len(main_titles))
     val_titles, val_abstracts = main_titles[:val_size], main_abstracts[:val_size]
