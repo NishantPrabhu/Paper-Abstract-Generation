@@ -4,7 +4,9 @@
 Our solution for DL Hack 2021 Track 2 by Analytics Club, IITM. Network to generate abstracts for scientific papers given their title.
 
 # Trained model
-Pretrained BART finetuned on given data in teacher-forcing mode: add link here
+Pretrained BART finetuned on given data in teacher-forcing mode: [model](https://drive.google.com/file/d/11yRsAb5uHWKF_td7UoxVeb0mOgMtC0Yk/view?usp=sharing) (**Leaderboard score**: 1.25549)
+
+**Warning**: Large file size, 500 MB+
 
 # Usage
 Code to train the best model was written by Nishant Prabhu. To re-train the model, run the following command inside `main`:
